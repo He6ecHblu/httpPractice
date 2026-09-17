@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -358,4 +359,82 @@ func TestLoggingMiddleware(t *testing.T) {
 			t.Errorf("log = %q, want it to contain %q", logLine, want)
 		}
 	}
+}
+
+func TestTaskHandlerWithGeneratedData(t *testing.T) {
+	const taskCount = 100
+	handler := NewTaskHandler(tasks.NewMemoryStore())
+	generated := generateTestTasks(taskCount)
+
+	for i, item := range generated {
+		body, err := json.Marshal(item)
+		if err != nil {
+			t.Fatalf("json.Marshal(task %d): %v", i, err)
+		}
+		response := performRequest(handler, http.MethodPost, "/tasks", string(body))
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create task %d status = %d, want %d; body: %s", i, response.Code, http.StatusCreated, response.Body.String())
+		}
+
+		var created tasks.Task
+		decodeResponse(t, response, &created)
+		if created.ID != i+1 {
+			t.Fatalf("created task %d ID = %d, want %d", i, created.ID, i+1)
+		}
+	}
+
+	allResponse := performRequest(handler, http.MethodGet, "/tasks", "")
+	var all []tasks.Task
+	decodeResponse(t, allResponse, &all)
+	if len(all) != taskCount {
+		t.Fatalf("GET /tasks returned %d tasks, want %d", len(all), taskCount)
+	}
+	for i, item := range all {
+		if item.ID != i+1 {
+			t.Errorf("task at index %d has ID %d, want %d", i, item.ID, i+1)
+		}
+		if item.Title != generated[i].Title || item.Description != generated[i].Description || item.Done != generated[i].Done {
+			t.Errorf("task at index %d = %#v, want generated fields from %#v", i, item, generated[i])
+		}
+	}
+
+	for _, tt := range []struct {
+		name      string
+		done      bool
+		wantCount int
+	}{
+		{name: "completed", done: true, wantCount: taskCount / 2},
+		{name: "not completed", done: false, wantCount: taskCount / 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			response := performRequest(handler, http.MethodGet, fmt.Sprintf("/tasks?done=%t", tt.done), "")
+			var filtered []tasks.Task
+			decodeResponse(t, response, &filtered)
+			if len(filtered) != tt.wantCount {
+				t.Fatalf("filtered task count = %d, want %d", len(filtered), tt.wantCount)
+			}
+			for _, item := range filtered {
+				if item.Done != tt.done {
+					t.Errorf("filtered task ID %d has done=%t, want %t", item.ID, item.Done, tt.done)
+				}
+			}
+		})
+	}
+}
+
+func generateTestTasks(count int) []tasks.Task {
+	result := make([]tasks.Task, 0, count)
+	for i := 0; i < count; i++ {
+		description := ""
+		if i%3 != 0 {
+			description = fmt.Sprintf("Тестовое описание %03d", i+1)
+		}
+		result = append(result, tasks.Task{
+			ID:          10_000 + i,
+			Title:       fmt.Sprintf("Тестовая задача %03d", i+1),
+			Description: description,
+			Done:        i%2 == 0,
+		})
+	}
+	return result
 }
